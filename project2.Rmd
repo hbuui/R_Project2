@@ -7,24 +7,25 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+# loading necessary libraries
+library(dplyr)    
+library(tidyr)    
+library(lubridate)
+library(stringr)  
+library(leaflet)
 ```
 
-## R Markdown
+```{r}
+# downloading and load the US confirmed cases/death data into a data frame
+url_us_confirmed <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv"
+url_us_deaths <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv"
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+message("Downloading US Confirmed Cases data...")
+us_confirmed_df <- read.csv(url_us_confirmed, stringsAsFactors = FALSE)
+message("US Confirmed Cases data downloaded.")
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+message("Downloading US Deaths data...")
+us_deaths_df <- read.csv(url_us_deaths, stringsAsFactors = FALSE)
+message("US Deaths data downloaded.")
 ```
 
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
-```
-
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
