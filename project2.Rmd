@@ -1,6 +1,6 @@
 ---
 title: "Project2"
-author: "Hien Bui"
+author: "Hien Bui, Ana Martinez"
 date: "2025-05-20"
 output: html_document
 ---
@@ -308,6 +308,3 @@ plot_california_cities <- ggplot(ca_cities_data, aes(x = Date, y = Cases, color 
 plot_california_cities
 
 ```
-
-##**Objective 4: Digging Deeper**
-
