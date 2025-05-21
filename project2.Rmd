@@ -13,19 +13,348 @@ library(tidyr)
 library(lubridate)
 library(stringr)  
 library(leaflet)
+library(htmltools)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(scales)
 ```
 
+USPRT
 ```{r}
 # downloading and load the US confirmed cases/death data into a data frame
 url_us_confirmed <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv"
 url_us_deaths <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv"
-
-message("Downloading US Confirmed Cases data...")
 us_confirmed_df <- read.csv(url_us_confirmed, stringsAsFactors = FALSE)
 message("US Confirmed Cases data downloaded.")
-
-message("Downloading US Deaths data...")
 us_deaths_df <- read.csv(url_us_deaths, stringsAsFactors = FALSE)
 message("US Deaths data downloaded.")
 ```
+WHO
+```{r}
+# downloading and load the GLOBAL confirmed cases/death data into a data frame
+url_global_confirmed <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv"
+url_global_deaths <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv"
+global_confirmed_df <- read.csv(url_global_confirmed, stringsAsFactors = FALSE)
+message("GLOBAl Confirmed Cases data downloaded.")
+global_deaths_df <- read.csv(url_global_deaths, stringsAsFactors = FALSE)
+message("GLOBAL Deaths Cases data downloaded.")
+```
 
+## **Objective 1: Global Map** 
+
+```{r}
+# looking at all column names that look like dates and parse them
+date_col_names_in_df <- names(global_confirmed_df)[5:ncol(global_confirmed_df)]
+
+potential_date_cols <- date_col_names_in_df[startsWith(date_col_names_in_df, "X") & grepl("\\.", date_col_names_in_df)]
+
+clean_date_strings <- sub("^X", "", potential_date_cols)
+
+parsed_dates <- lubridate::parse_date_time(clean_date_strings, orders = c("m.d.y", "m.d.Y"))
+
+most_recent_date_global <- max(parsed_dates, na.rm = TRUE)
+
+most_recent_col_name_r <- potential_date_cols[which(parsed_dates == most_recent_date_global)][1]
+
+if (!most_recent_col_name_r %in% names(global_confirmed_df)) {
+  stop("Failed to robustly identify the most recent date column in global_confirmed_df. Check raw data column names.")
+}
+
+message(paste("Most recent date identified:", format(most_recent_date_global, "%Y-%m-%d")))
+message(paste("Corresponding column name:", most_recent_col_name_r))
+
+# selecting relevant columns and pivot to long format for easier processing
+global_confirmed_long <- global_confirmed_df %>%
+  select(Province.State, `Country.Region`, Lat, Long, all_of(most_recent_col_name_r)) %>%
+  rename(Confirmed_Cases = all_of(most_recent_col_name_r))
+
+global_deaths_long <- global_deaths_df %>%
+  select(Province.State, `Country.Region`, Lat, Long, all_of(most_recent_col_name_r)) %>%
+  rename(Deaths_Cases = all_of(most_recent_col_name_r))
+
+# combine confirmed and deaths data for the most recent date
+global_cases_combined <- full_join(
+  global_confirmed_long,
+  global_deaths_long,
+  by = c("Province.State", "Country.Region", "Lat", "Long") 
+) %>%
+  mutate(Total_Cases = Confirmed_Cases + Deaths_Cases) %>%
+  replace_na(list(Total_Cases = 0, Confirmed_Cases = 0, Deaths_Cases = 0))
+
+
+# aggregate to country level by summing cases and calculate mean lat & long for each country
+country_level_data <- global_cases_combined %>%
+  group_by(`Country.Region`) %>%
+  summarize(
+    Total_Cases = sum(Total_Cases, na.rm = TRUE),
+    Total_Confirmations = sum(Confirmed_Cases, na.rm = TRUE),
+    Total_Deaths = sum(Deaths_Cases, na.rm = TRUE),
+    Avg_Lat = mean(Lat, na.rm = TRUE),
+    Avg_Long = mean(Long, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(Avg_Lat) & !is.na(Avg_Long))
+
+# calculating the quartiles for the Total_Cases to categorize magnitudes
+quantiles_cases <- quantile(country_level_data$Total_Cases, probs = c(0.25, 0.50, 0.75), na.rm = TRUE)
+
+# assign magnitude categories and colors based on the calculated quartiles.
+country_level_data <- country_level_data %>%
+  mutate(
+    Magnitude_Category = case_when(
+      Total_Cases <= quantiles_cases[1] ~ "Low",
+      Total_Cases > quantiles_cases[1] & Total_Cases <= quantiles_cases[3] ~ "Neutral",
+      Total_Cases > quantiles_cases[3] ~ "High",
+      TRUE ~ "Unknown"
+    ),
+    Color = case_when(
+      Magnitude_Category == "Low" ~ "blue",
+      Magnitude_Category == "Neutral" ~ "gray",
+      Magnitude_Category == "High" ~ "red",
+      TRUE ~ "black"
+    )
+  )
+
+# adjust the 'radius_scale_factor'
+radius_scale_factor <- 300 
+
+global_covid_map <- country_level_data %>%
+  leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+
+  addCircleMarkers(
+    ~Avg_Long,
+    ~Avg_Lat,
+    radius = ~sqrt(Total_Cases) / radius_scale_factor,
+    fillColor = ~Color,
+    fillOpacity = 0.7,
+    stroke = TRUE,
+    color = "black",
+    weight = 0.5,
+
+    # displays country name when mouse hovers over the marker
+    label = ~htmlEscape(Country.Region), 
+
+    # displays a popup with detailed information when marker is clicked
+    popup = ~paste0(
+      "<b>Country:</b> ", Country.Region, "<br/>", 
+      "<b>Total Confirmed:</b> ", format(Total_Confirmations, big.mark = ","), "<br/>",
+      "<b>Total Deaths:</b> ", format(Total_Deaths, big.mark = ","), "<br/>",
+      "<b>Total Cases (Conf. + Deaths):</b> ", format(Total_Cases, big.mark = ",")
+    )
+  )
+
+global_covid_map
+```
+
+## **Objective 2: Narrowing Down Hot Spots**
+
+```{r}
+# Use the 'country_level_data' created in Objective 1
+# This data frame already contains Total_Confirmations and Total_Deaths aggregated by country.
+
+# 1. Get the top countries by Total_Confirmations
+top_confirmations <- country_level_data %>%
+  arrange(desc(Total_Confirmations)) %>% # Sort by confirmations in descending order
+  select(Country = Country.Region, Count = Total_Confirmations) %>% # Select and rename columns
+  head(30) # Get the top 30 countries (adjust as needed, example shows more)
+
+# 2. Get the top countries by Total_Deaths
+top_deaths <- country_level_data %>%
+  arrange(desc(Total_Deaths)) %>% # Sort by deaths in descending order
+  select(Country = Country.Region, Count = Total_Deaths) %>% # Select and rename columns
+  head(30) # Get the top 30 countries
+
+# 3. Combine the two top lists side-by-side for the kable table
+# We'll create a combined data frame, adding a Rank column.
+# Using 'left_join' here to ensure we match ranks if desired, or simple 'data.frame'
+# If the number of rows is guaranteed to be the same, `data.frame` is fine.
+combined_top_countries <- data.frame(
+  Rank = 1:nrow(top_confirmations), # Assuming both lists have the same number of rows for ranking
+  Confirmations_Country = top_confirmations$Country,
+  Confirmations_Count = top_confirmations$Count,
+  Deaths_Country = top_deaths$Country,
+  Deaths_Count = top_deaths$Count
+)
+
+# 4. Create the kable table with customization
+table_output <- combined_top_countries %>%
+  kable(
+    col.names = c("Rank", "Country", "Count", "Country", "Count"), # Custom column headers
+    align = c("c", "l", "r", "l", "r"), # Alignment for columns: center, left, right, left, right
+    caption = "Table of Top Countries by Confirmations and Deaths" # Table caption
+  ) %>%
+  # Add kableExtra styling for a more customized look
+  add_header_above(c(" " = 1, "Confirmations" = 2, "Deaths" = 2)) %>% # Group columns under headers
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+    full_width = FALSE,
+    position = "left"
+  )
+
+# Print the table (R Markdown will render it automatically)
+table_output # CORRECTED: Removed parentheses here
+```
+
+## **Objective 3: Zooming Into Our State**
+
+```{r}
+## Objective 3 - Data Preparation for California Plots
+
+# --- Ensure US data is downloaded for your USPRT role ---
+# If you commented this out earlier, uncomment it for this objective:
+url_us_confirmed <- "https://raw.githubusercontent.com/CSSEGISAndData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv"
+us_confirmed_df <- read.csv(url_us_confirmed, stringsAsFactors = FALSE)
+
+
+# Wrangle US Confirmed data to focus on California and prepare for time-series analysis.
+# This involves filtering, selecting relevant columns, and pivoting the wide-format date columns
+# into a long format suitable for ggplot2.
+ca_confirmed_long <- us_confirmed_df %>%
+  filter(Province_State == "California") %>% # Filter for data specific to California
+  select(Admin2, Province_State, starts_with("X")) %>% # Select county (Admin2) and all date columns (start with 'X')
+  pivot_longer(
+    cols = starts_with("X"),         # Columns to pivot are those starting with 'X'
+    names_to = "Date_String",        # New column for the original date string (e.g., "X1.22.20")
+    values_to = "Confirmations"      # New column for the corresponding confirmation count
+  ) %>%
+  mutate(
+    # Convert the 'Xm.d.yy' date strings to proper R Date objects
+    Date = as.Date(sub("^X", "", Date_String), format = "%m.%d.%y"),
+    # Handle cases where Admin2 (county) might be NA, replacing with a placeholder
+    Admin2 = ifelse(is.na(Admin2), "Unassigned_County", Admin2),
+    # Ensure 'Confirmations' is numeric, coercing any non-numeric values to NA
+    Confirmations = as.numeric(Confirmations)
+  ) %>%
+  filter(!is.na(Date)) %>% # Remove rows where the date couldn't be parsed
+  arrange(Admin2, Date) %>% # Arrange data for correct cumulative calculations
+  # Ensure 'Confirmations' are monotonically increasing for each county/area
+  # This handles potential data corrections where counts might temporarily decrease.
+  group_by(Admin2) %>%
+  mutate(Confirmations = cummax(Confirmations)) %>%
+  ungroup()
+
+
+# Prepare Statewide California Trajectory Data:
+# Sum all confirmations across all counties in California for each date.
+ca_state_data <- ca_confirmed_long %>%
+  group_by(Date) %>%
+  summarize(Total_Confirmations = sum(Confirmations, na.rm = TRUE), .groups = "drop") %>%
+  arrange(Date)
+
+
+# Identify California's Top 3 Cities (Counties) by most recent confirmations:
+# We'll use the most recent date in the dataset to determine the top counties.
+most_recent_ca_date <- max(ca_state_data$Date)
+
+# Filter for the most recent date, group by county, and get the top 3 by confirmations.
+top_ca_cities_info <- ca_confirmed_long %>%
+  filter(Date == most_recent_ca_date) %>%
+  group_by(Admin2) %>%
+  summarize(Most_Recent_Confirmations = sum(Confirmations, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(Most_Recent_Confirmations)) %>%
+  head(3) # Get the top 3 counties/cities
+
+# Extract the names of these top 3 cities/counties
+top_city_names <- top_ca_cities_info$Admin2
+
+# Prepare Data for Top 3 California Cities/Counties Trajectories:
+# Filter the long California data to include only the top 3 identified counties.
+ca_cities_data <- ca_confirmed_long %>%
+  filter(Admin2 %in% top_city_names) %>%
+  group_by(Admin2, Date) %>%
+  summarize(Cases = sum(Confirmations, na.rm = TRUE), .groups = "drop") %>%
+  arrange(Admin2, Date)
+
+
+# Define Key Dates for Plot Annotations:
+# These dates will be marked on your plots to highlight significant events.
+date_eua_2nd_dose <- as.Date("2021-01-29") + weeks(6) # 6 weeks after Moderna EUA (Jan 29, 2021)
+date_delta_dominant <- as.Date("2021-05-11") # Date Delta variant became dominant
+date_omicron_dominant <- as.Date("2021-11-26") # Date Omicron variant became dominant
+# Date for "Self-isolation at Home" (SAH), derived from your example image
+date_sah <- as.Date("2020-03-19")
+
+# Optional: Print summary of prepared data to verify (uncomment to see output)
+# message("California Statewide Data (first few rows):")
+# head(ca_state_data)
+# message("\nCalifornia Top Cities Data (first few rows):")
+# head(ca_cities_data)
+# message("\nTop 3 California Cities/Counties identified:")
+# print(top_city_names)
+# message("\nKey Dates:")
+# message(paste("EUA + 6 weeks (2nd Dose):", date_eua_2nd_dose))
+# message(paste("Delta Variant Dominant:", date_delta_dominant))
+# message(paste("Omicron Variant Dominant:", date_omicron_dominant))
+# message(paste("SAH (Self-isolation at Home):", date_sah))
+
+## Objective 3 - Plot 1: California Statewide Confirmations
+
+# This chunk creates and displays the first plot.
+# Make sure the data preparation chunk above has been run successfully!
+
+plot_california_state <- ggplot(ca_state_data, aes(x = Date, y = Total_Confirmations)) +
+  geom_line(color = "midnightblue", size = 1.2) + # Line representing the trend
+  geom_point(color = "midnightblue", size = 0.8) + # Points for individual data observations
+  labs(
+    title = "COVID-19 confirmations in California",
+    x = "Date",
+    y = "Confirmations"
+  ) +
+  scale_y_continuous(labels = scales::comma) + # Format y-axis numbers with commas
+  theme_minimal() + # Use a clean, minimal theme for the plot
+  # Add vertical lines to mark key dates
+  geom_vline(xintercept = date_sah, linetype = "dashed", color = "darkcyan", size = 0.7) +
+  geom_vline(xintercept = date_eua_2nd_dose, linetype = "dashed", color = "darkcyan", size = 0.7) +
+  geom_vline(xintercept = date_delta_dominant, linetype = "dashed", color = "brown", size = 0.7) +
+  geom_vline(xintercept = date_omicron_dominant, linetype = "dashed", color = "brown", size = 0.7) +
+  # Add text annotations for the key dates
+  annotate("text", x = date_sah, y = max(ca_state_data$Total_Confirmations, na.rm = TRUE) * 0.7,
+           label = "SAH", color = "darkcyan", hjust = 1.1, vjust = 1, size = 3) +
+  annotate("text", x = date_eua_2nd_dose, y = max(ca_state_data$Total_Confirmations, na.rm = TRUE) * 0.7,
+           label = "EUA\n+6 weeks", color = "darkcyan", hjust = -0.1, vjust = 1, size = 3) +
+  annotate("text", x = date_delta_dominant, y = max(ca_state_data$Total_Confirmations, na.rm = TRUE) * 0.9,
+           label = "Delta", color = "brown", hjust = -0.1, vjust = 1, size = 3) +
+  annotate("text", x = date_omicron_dominant, y = max(ca_state_data$Total_Confirmations, na.rm = TRUE) * 0.9,
+           label = "Omicron", color = "brown", hjust = 1.1, vjust = 1, size = 3)
+
+# Display the plot
+plot_california_state
+
+
+## Objective 3 - Plot 2: Top 3 California Cities Confirmations
+
+# This chunk creates and displays the second plot.
+# Make sure the data preparation chunk above has been run successfully!
+
+plot_california_cities <- ggplot(ca_cities_data, aes(x = Date, y = Cases, color = Admin2)) +
+  geom_line(size = 1.2) + # Lines for each city, colored by 'Admin2' (county name)
+  geom_point(size = 0.8) + # Points for individual data observations
+  labs(
+    x = "Date",
+    y = "Cases",
+    color = "County" # Legend title for the 'Admin2' aesthetic
+  ) +
+  scale_y_continuous(labels = scales::comma) + # Format y-axis numbers with commas
+  theme_minimal() +
+  # Add vertical lines to mark key dates (same as the statewide plot)
+  geom_vline(xintercept = date_sah, linetype = "dashed", color = "darkcyan", size = 0.7) +
+  geom_vline(xintercept = date_eua_2nd_dose, linetype = "dashed", color = "darkcyan", size = 0.7) +
+  geom_vline(xintercept = date_delta_dominant, linetype = "dashed", color = "brown", size = 0.7) +
+  geom_vline(xintercept = date_omicron_dominant, linetype = "dashed", color = "brown", size = 0.7) +
+  # Add text annotations for the key dates (same as the statewide plot)
+  annotate("text", x = date_sah, y = max(ca_cities_data$Cases, na.rm = TRUE) * 0.7,
+           label = "SAH", color = "darkcyan", hjust = 1.1, vjust = 1, size = 3) +
+  annotate("text", x = date_eua_2nd_dose, y = max(ca_cities_data$Cases, na.rm = TRUE) * 0.7,
+           label = "EUA\n+6 weeks", color = "darkcyan", hjust = -0.1, vjust = 1, size = 3) +
+  annotate("text", x = date_delta_dominant, y = max(ca_cities_data$Cases, na.rm = TRUE) * 0.9,
+           label = "Delta", color = "brown", hjust = -0.1, vjust = 1, size = 3) +
+  annotate("text", x = date_omicron_dominant, y = max(ca_cities_data$Cases, na.rm = TRUE) * 0.9,
+           label = "Omicron", color = "brown", hjust = 1.1, vjust = 1, size = 3)
+
+# Display the plot
+plot_california_cities
+
+
+```
