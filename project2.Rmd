@@ -194,7 +194,7 @@ column_spec(5, color = "red")
 ## **Objective 3: Zooming Into Our State**
 
 ```{r}
-# filter down USConfirmed data to focus on Ca and prepare for time-series analysis
+# filter down US confirmed data to focus on Ca and prepare for time-series analysis
 ca_confirmed_long <- us_confirmed_df %>%
   filter(Province_State == "California") %>% 
   select(Admin2, Province_State, starts_with("X")) %>% 
@@ -204,7 +204,7 @@ ca_confirmed_long <- us_confirmed_df %>%
     values_to = "Confirmations"      
   ) %>%
   mutate(
-    # convert the 'Xm.d.yy' date strings to proper R Date objects
+    # convert the 'Xm.d.yy' date strings to proper R date objects
     Date = as.Date(sub("^X", "", Date_String), format = "%m.%d.%y"),
     # if NA then replace with a placeholder
     Admin2 = ifelse(is.na(Admin2), "Unassigned_County", Admin2),
@@ -307,4 +307,96 @@ plot_california_cities <- ggplot(ca_cities_data, aes(x = Date, y = Cases, color 
 
 plot_california_cities
 
+```
+
+## **Objective 4: Digging Deeper**
+
+```{r}
+# we need the most recent date column for both confirmed and deaths.
+date_col_names_us <- names(us_confirmed_df)[12:ncol(us_confirmed_df)]
+potential_date_cols_us <- date_col_names_us[startsWith(date_col_names_us, "X") & grepl("\\.", date_col_names_us)]
+clean_date_strings_us <- sub("^X", "", potential_date_cols_us)
+parsed_dates_us <- lubridate::parse_date_time(clean_date_strings_us, orders = c("m.d.y", "m.d.Y"))
+most_recent_date_us <- max(parsed_dates_us, na.rm = TRUE)
+most_recent_col_name_us_confirmed <- potential_date_cols_us[which(parsed_dates_us == most_recent_date_us)][1]
+
+# looking for the most recent date column name from the deaths data
+date_col_names_us_deaths <- names(us_deaths_df)[12:ncol(us_deaths_df)]
+potential_date_cols_us_deaths <- date_col_names_us_deaths[startsWith(date_col_names_us_deaths, "X") & grepl("\\.", date_col_names_us_deaths)]
+clean_date_strings_us_deaths <- sub("^X", "", potential_date_cols_us_deaths)
+parsed_dates_us_deaths <- lubridate::parse_date_time(clean_date_strings_us_deaths, orders = c("m.d.y", "m.d.Y"))
+most_recent_col_name_us_deaths <- potential_date_cols_us_deaths[which(parsed_dates_us_deaths == most_recent_date_us)][1]
+
+
+# select relevant columns then combine confirmed and deaths data for the most recent date
+us_confirmed_latest <- us_confirmed_df %>%
+  select(
+    UID, Admin2, Province_State, Combined_Key,
+    Confirmed = all_of(most_recent_col_name_us_confirmed)
+  )
+
+# getting deaths data with population 
+us_deaths_latest <- us_deaths_df %>%
+  select(
+    UID, Admin2, Province_State, Combined_Key, Population,
+    Deaths = all_of(most_recent_col_name_us_deaths)
+  )
+
+# using full_join to keep all entries and handle potential mismatches, then filter NAs.
+us_data_for_obj4 <- full_join(
+  us_confirmed_latest,
+  us_deaths_latest,
+  by = c("UID", "Admin2", "Province_State", "Combined_Key")
+) %>%
+  # filter out rows with NA or zero for population, confirmed, or deaths
+  filter(
+    !is.na(Population) & Population > 0,
+    !is.na(Confirmed) & Confirmed > 0,
+    !is.na(Deaths) & Deaths > 0
+  ) %>%
+  # calculate log-transformed values
+  mutate(
+    Log_Population = log10(Population),
+    Log_Confirmed = log10(Confirmed),
+    Log_Deaths = log10(Deaths)
+  )
+
+# making the first scatter plot: Confirmations Vs. Population
+plot_conf_vs_pop <- ggplot(us_data_for_obj4, aes(x = Population, y = Confirmed)) +
+  geom_point(color = "midnightblue", alpha = 0.8) + 
+  scale_x_log10(labels = scales::comma) + 
+  scale_y_log10(labels = scales::comma) + 
+  labs(
+    title = "Confirmations Vs. Population",
+    x = "Population",
+    y = "Confirmation Counts"
+  ) +
+  theme_minimal() +
+  scale_x_log10(breaks = c(1024, 16384, 262144, 4194304),
+                labels = scales::comma_format()) +
+  scale_y_log10(breaks = c(256, 8192, 262144),
+                labels = scales::comma_format())
+
+
+# making the second scatter plot: Deaths Vs. Confirmations
+plot_deaths_vs_conf <- ggplot(us_data_for_obj4, aes(x = Confirmed, y = Deaths)) +
+  geom_point(color = "darkred", alpha = 0.8) + 
+  scale_x_log10(labels = scales::comma) + 
+  scale_y_log10(labels = scales::comma) + #
+  labs(
+    title = "Deaths Vs. Confirmations",
+    x = "Confirmed Counts",
+    y = "Death Counts"
+  ) +
+  theme_minimal() +
+  scale_x_log10(breaks = c(1024, 16384, 262144, 4194304),
+                labels = scales::comma_format()) +
+  scale_y_log10(breaks = c(32, 256, 2048, 16384),
+                labels = scales::comma_format())
+
+
+# combining the plots using cowplot and arrange them side-by-side
+combined_scatter_plots <- plot_grid(plot_conf_vs_pop, plot_deaths_vs_conf, ncol = 2)
+
+combined_scatter_plots
 ```
