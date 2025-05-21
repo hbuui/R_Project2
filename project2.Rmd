@@ -7,6 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
 # loading necessary libraries
 library(dplyr)    
 library(tidyr)    
@@ -18,6 +19,7 @@ library(knitr)
 library(kableExtra)
 library(ggplot2)
 library(scales)
+library(cowplot)
 ```
 
 USPRT
@@ -151,165 +153,121 @@ global_covid_map
 ## **Objective 2: Narrowing Down Hot Spots**
 
 ```{r}
-# Use the 'country_level_data' created in Objective 1
-# This data frame already contains Total_Confirmations and Total_Deaths aggregated by country.
+# group and summarize the data by country: top 10 countries by confirmed cases and deaths
+top_confirmed <- global_confirmed_df %>%
+select(`Country.Region`, all_of(most_recent_col_name_r)) %>%
+group_by(`Country.Region`) %>%
+summarise(Total_Confirmed = sum(.data[[most_recent_col_name_r]], na.rm = TRUE)) %>%
+arrange(desc(Total_Confirmed)) %>%
+slice(1:10)
 
-# 1. Get the top countries by Total_Confirmations
-top_confirmations <- country_level_data %>%
-  arrange(desc(Total_Confirmations)) %>% # Sort by confirmations in descending order
-  select(Country = Country.Region, Count = Total_Confirmations) %>% # Select and rename columns
-  head(30) # Get the top 30 countries (adjust as needed, example shows more)
+top_deaths <- global_deaths_df %>%
+select(`Country.Region`, all_of(most_recent_col_name_r)) %>%
+group_by(`Country.Region`) %>%
+summarise(Total_Deaths = sum(.data[[most_recent_col_name_r]], na.rm = TRUE)) %>%
+arrange(desc(Total_Deaths)) %>%
+slice(1:10)
 
-# 2. Get the top countries by Total_Deaths
-top_deaths <- country_level_data %>%
-  arrange(desc(Total_Deaths)) %>% # Sort by deaths in descending order
-  select(Country = Country.Region, Count = Total_Deaths) %>% # Select and rename columns
-  head(30) # Get the top 30 countries
-
-# 3. Combine the two top lists side-by-side for the kable table
-# We'll create a combined data frame, adding a Rank column.
-# Using 'left_join' here to ensure we match ranks if desired, or simple 'data.frame'
-# If the number of rows is guaranteed to be the same, `data.frame` is fine.
-combined_top_countries <- data.frame(
-  Rank = 1:nrow(top_confirmations), # Assuming both lists have the same number of rows for ranking
-  Confirmations_Country = top_confirmations$Country,
-  Confirmations_Count = top_confirmations$Count,
-  Deaths_Country = top_deaths$Country,
-  Deaths_Count = top_deaths$Count
+# combine top 10 confirmed and deaths into a single table
+hotspot_table <- tibble(
+Rank = 1:10,
+Country_Confirmed = top_confirmed$`Country.Region`,
+Confirmed = top_confirmed$Total_Confirmed,
+Country_Deaths = top_deaths$`Country.Region`,
+Deaths = top_deaths$Total_Deaths
 )
 
-# 4. Create the kable table with customization
-table_output <- combined_top_countries %>%
-  kable(
-    col.names = c("Rank", "Country", "Count", "Country", "Count"), # Custom column headers
-    align = c("c", "l", "r", "l", "r"), # Alignment for columns: center, left, right, left, right
-    caption = "Table of Top Countries by Confirmations and Deaths" # Table caption
-  ) %>%
-  # Add kableExtra styling for a more customized look
-  add_header_above(c(" " = 1, "Confirmations" = 2, "Deaths" = 2)) %>% # Group columns under headers
-  kable_styling(
-    bootstrap_options = c("striped", "hover", "condensed", "responsive"),
-    full_width = FALSE,
-    position = "left"
-  )
+# display table using kable and kableExtra
+kable(hotspot_table,
+caption = "Top 10 Countries by COVID-19 Confirmed Cases and Deaths",
+col.names = c("Rank", "Country (Confirmed)", "Confirmed", "Country (Deaths)", "Deaths"),
+format = "html") %>%
+kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+full_width = FALSE,
+position = "center") %>%
+column_spec(1, bold = TRUE) %>%
+column_spec(3, color = "blue") %>%
+column_spec(5, color = "red")
 
-# Print the table (R Markdown will render it automatically)
-table_output # CORRECTED: Removed parentheses here
 ```
 
 ## **Objective 3: Zooming Into Our State**
 
 ```{r}
-## Objective 3 - Data Preparation for California Plots
-
-# --- Ensure US data is downloaded for your USPRT role ---
-# If you commented this out earlier, uncomment it for this objective:
-url_us_confirmed <- "https://raw.githubusercontent.com/CSSEGISAndData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv"
-us_confirmed_df <- read.csv(url_us_confirmed, stringsAsFactors = FALSE)
-
-
-# Wrangle US Confirmed data to focus on California and prepare for time-series analysis.
-# This involves filtering, selecting relevant columns, and pivoting the wide-format date columns
-# into a long format suitable for ggplot2.
+# filter down USConfirmed data to focus on Ca and prepare for time-series analysis
 ca_confirmed_long <- us_confirmed_df %>%
-  filter(Province_State == "California") %>% # Filter for data specific to California
-  select(Admin2, Province_State, starts_with("X")) %>% # Select county (Admin2) and all date columns (start with 'X')
+  filter(Province_State == "California") %>% 
+  select(Admin2, Province_State, starts_with("X")) %>% 
   pivot_longer(
-    cols = starts_with("X"),         # Columns to pivot are those starting with 'X'
-    names_to = "Date_String",        # New column for the original date string (e.g., "X1.22.20")
-    values_to = "Confirmations"      # New column for the corresponding confirmation count
+    cols = starts_with("X"),        
+    names_to = "Date_String",       
+    values_to = "Confirmations"      
   ) %>%
   mutate(
-    # Convert the 'Xm.d.yy' date strings to proper R Date objects
+    # convert the 'Xm.d.yy' date strings to proper R Date objects
     Date = as.Date(sub("^X", "", Date_String), format = "%m.%d.%y"),
-    # Handle cases where Admin2 (county) might be NA, replacing with a placeholder
+    # if NA then replace with a placeholder
     Admin2 = ifelse(is.na(Admin2), "Unassigned_County", Admin2),
-    # Ensure 'Confirmations' is numeric, coercing any non-numeric values to NA
     Confirmations = as.numeric(Confirmations)
   ) %>%
-  filter(!is.na(Date)) %>% # Remove rows where the date couldn't be parsed
-  arrange(Admin2, Date) %>% # Arrange data for correct cumulative calculations
-  # Ensure 'Confirmations' are monotonically increasing for each county/area
-  # This handles potential data corrections where counts might temporarily decrease.
+  filter(!is.na(Date)) %>% 
+  arrange(Admin2, Date) %>% 
   group_by(Admin2) %>%
   mutate(Confirmations = cummax(Confirmations)) %>%
   ungroup()
 
 
-# Prepare Statewide California Trajectory Data:
-# Sum all confirmations across all counties in California for each date.
+#  all confirmations across all counties in Ca for each date
 ca_state_data <- ca_confirmed_long %>%
   group_by(Date) %>%
   summarize(Total_Confirmations = sum(Confirmations, na.rm = TRUE), .groups = "drop") %>%
   arrange(Date)
 
-
-# Identify California's Top 3 Cities (Counties) by most recent confirmations:
-# We'll use the most recent date in the dataset to determine the top counties.
+# using the most recent date in the dataset to determine the top counties.
 most_recent_ca_date <- max(ca_state_data$Date)
 
-# Filter for the most recent date, group by county, and get the top 3 by confirmations.
+# then filter for the most recent date, group by county, and get the top 3 by confirmations.
 top_ca_cities_info <- ca_confirmed_long %>%
   filter(Date == most_recent_ca_date) %>%
   group_by(Admin2) %>%
   summarize(Most_Recent_Confirmations = sum(Confirmations, na.rm = TRUE), .groups = "drop") %>%
   arrange(desc(Most_Recent_Confirmations)) %>%
-  head(3) # Get the top 3 counties/cities
+  head(3) 
 
-# Extract the names of these top 3 cities/counties
+# getting the names of these top 3 cities/counties
 top_city_names <- top_ca_cities_info$Admin2
 
-# Prepare Data for Top 3 California Cities/Counties Trajectories:
-# Filter the long California data to include only the top 3 identified counties.
+# then filter the long Ca data to include only the top 3 identified counties.
 ca_cities_data <- ca_confirmed_long %>%
   filter(Admin2 %in% top_city_names) %>%
   group_by(Admin2, Date) %>%
   summarize(Cases = sum(Confirmations, na.rm = TRUE), .groups = "drop") %>%
   arrange(Admin2, Date)
 
+# highlight significant events to be marked on the plot 
+date_sah <- as.Date("2020-03-19") # date of "Self-isolation at Home" (SAH)
+date_eua_2nd_dose <- as.Date("2021-01-29") + weeks(6) # 6 weeks after Moderna EUA 
+date_delta_dominant <- as.Date("2021-05-11") #  date of delta variant became dominant
+date_omicron_dominant <- as.Date("2021-11-26") # date of omicron variant became dominant
 
-# Define Key Dates for Plot Annotations:
-# These dates will be marked on your plots to highlight significant events.
-date_eua_2nd_dose <- as.Date("2021-01-29") + weeks(6) # 6 weeks after Moderna EUA (Jan 29, 2021)
-date_delta_dominant <- as.Date("2021-05-11") # Date Delta variant became dominant
-date_omicron_dominant <- as.Date("2021-11-26") # Date Omicron variant became dominant
-# Date for "Self-isolation at Home" (SAH), derived from your example image
-date_sah <- as.Date("2020-03-19")
 
-# Optional: Print summary of prepared data to verify (uncomment to see output)
-# message("California Statewide Data (first few rows):")
-# head(ca_state_data)
-# message("\nCalifornia Top Cities Data (first few rows):")
-# head(ca_cities_data)
-# message("\nTop 3 California Cities/Counties identified:")
-# print(top_city_names)
-# message("\nKey Dates:")
-# message(paste("EUA + 6 weeks (2nd Dose):", date_eua_2nd_dose))
-# message(paste("Delta Variant Dominant:", date_delta_dominant))
-# message(paste("Omicron Variant Dominant:", date_omicron_dominant))
-# message(paste("SAH (Self-isolation at Home):", date_sah))
-
-## Objective 3 - Plot 1: California Statewide Confirmations
-
-# This chunk creates and displays the first plot.
-# Make sure the data preparation chunk above has been run successfully!
-
+# plotting confirmations in Ca
 plot_california_state <- ggplot(ca_state_data, aes(x = Date, y = Total_Confirmations)) +
-  geom_line(color = "midnightblue", size = 1.2) + # Line representing the trend
-  geom_point(color = "midnightblue", size = 0.8) + # Points for individual data observations
+  geom_line(color = "midnightblue", size = 1.2) + 
+  geom_point(color = "midnightblue", size = 0.8) + 
   labs(
     title = "COVID-19 confirmations in California",
     x = "Date",
     y = "Confirmations"
   ) +
-  scale_y_continuous(labels = scales::comma) + # Format y-axis numbers with commas
-  theme_minimal() + # Use a clean, minimal theme for the plot
-  # Add vertical lines to mark key dates
+  scale_y_continuous(labels = scales::comma) + 
+  theme_minimal() + 
+  # adding vertical lines to mark key dates
   geom_vline(xintercept = date_sah, linetype = "dashed", color = "darkcyan", size = 0.7) +
   geom_vline(xintercept = date_eua_2nd_dose, linetype = "dashed", color = "darkcyan", size = 0.7) +
   geom_vline(xintercept = date_delta_dominant, linetype = "dashed", color = "brown", size = 0.7) +
   geom_vline(xintercept = date_omicron_dominant, linetype = "dashed", color = "brown", size = 0.7) +
-  # Add text annotations for the key dates
+  # adding text annotations for the key dates
   annotate("text", x = date_sah, y = max(ca_state_data$Total_Confirmations, na.rm = TRUE) * 0.7,
            label = "SAH", color = "darkcyan", hjust = 1.1, vjust = 1, size = 3) +
   annotate("text", x = date_eua_2nd_dose, y = max(ca_state_data$Total_Confirmations, na.rm = TRUE) * 0.7,
@@ -319,31 +277,25 @@ plot_california_state <- ggplot(ca_state_data, aes(x = Date, y = Total_Confirmat
   annotate("text", x = date_omicron_dominant, y = max(ca_state_data$Total_Confirmations, na.rm = TRUE) * 0.9,
            label = "Omicron", color = "brown", hjust = 1.1, vjust = 1, size = 3)
 
-# Display the plot
 plot_california_state
 
-
-## Objective 3 - Plot 2: Top 3 California Cities Confirmations
-
-# This chunk creates and displays the second plot.
-# Make sure the data preparation chunk above has been run successfully!
-
+#plotting the top 3 cities in Ca
 plot_california_cities <- ggplot(ca_cities_data, aes(x = Date, y = Cases, color = Admin2)) +
-  geom_line(size = 1.2) + # Lines for each city, colored by 'Admin2' (county name)
-  geom_point(size = 0.8) + # Points for individual data observations
+  geom_line(size = 1.2) + 
+  geom_point(size = 0.8) + 
   labs(
     x = "Date",
     y = "Cases",
-    color = "County" # Legend title for the 'Admin2' aesthetic
+    color = "County" 
   ) +
-  scale_y_continuous(labels = scales::comma) + # Format y-axis numbers with commas
+  scale_y_continuous(labels = scales::comma) + 
   theme_minimal() +
-  # Add vertical lines to mark key dates (same as the statewide plot)
+  # adding vertical lines to mark key dates 
   geom_vline(xintercept = date_sah, linetype = "dashed", color = "darkcyan", size = 0.7) +
   geom_vline(xintercept = date_eua_2nd_dose, linetype = "dashed", color = "darkcyan", size = 0.7) +
   geom_vline(xintercept = date_delta_dominant, linetype = "dashed", color = "brown", size = 0.7) +
   geom_vline(xintercept = date_omicron_dominant, linetype = "dashed", color = "brown", size = 0.7) +
-  # Add text annotations for the key dates (same as the statewide plot)
+  # adding text annotations for the key dates 
   annotate("text", x = date_sah, y = max(ca_cities_data$Cases, na.rm = TRUE) * 0.7,
            label = "SAH", color = "darkcyan", hjust = 1.1, vjust = 1, size = 3) +
   annotate("text", x = date_eua_2nd_dose, y = max(ca_cities_data$Cases, na.rm = TRUE) * 0.7,
@@ -353,8 +305,9 @@ plot_california_cities <- ggplot(ca_cities_data, aes(x = Date, y = Cases, color 
   annotate("text", x = date_omicron_dominant, y = max(ca_cities_data$Cases, na.rm = TRUE) * 0.9,
            label = "Omicron", color = "brown", hjust = 1.1, vjust = 1, size = 3)
 
-# Display the plot
 plot_california_cities
 
-
 ```
+
+##**Objective 4: Digging Deeper**
+
